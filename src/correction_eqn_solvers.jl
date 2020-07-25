@@ -1,4 +1,4 @@
-export GMRES, BiCGStabl, Exact
+export GMRES, MINRES, BiCGStabl, CG, Exact
 
 abstract type CorrectionSolver end
 
@@ -9,6 +9,10 @@ struct GMRES <: CorrectionSolver
     function GMRES(n::Int; iterations::Int = 5, tolerance::Float64 = 1e-6)
         new(n, iterations, tolerance)
     end
+end
+
+struct MINRES <: CorrectionSolver
+    n::Int
 end
 
 struct BiCGStabl <: CorrectionSolver
@@ -30,6 +34,20 @@ struct BiCGStabl <: CorrectionSolver
 
         new(max_mv_products, tolerance, l, r_shadow, rs, us, γ, M)
     end
+end
+
+struct CG{T,CGStats} <: CorrectionSolver
+    n::Integer
+    maxiter::Integer
+    tol::T
+    statevars::CGStats
+end
+
+function CG(A; maxiter=size(A,2), tol=√(eps(real(eltype(A)))))
+    T = eltype(A)
+    m,n = size(A)
+    statevars = IterativeSolvers.CGStateVariables(zeros(T, m), zeros(T, m), zeros(T, m))
+    CG(n, maxiter, tol, statevars)
 end
 
 struct Exact <: CorrectionSolver end
@@ -139,6 +157,37 @@ this is simplified in Krylov subspaces as solving
 ``(βA - αB)t = b``
 with the left preconditioner `Pl = (I - Z inv(Q'Z) Q')`
 """
+function solve_generalized_correction_equation!(solver::MINRES, A, B, preconditioner, x, Q, Z, precZ, QZ, α, β, r, spare_vector, tol)
+    n = size(A, 1)
+    @assert n == solver.n
+    T = eltype(x)
+
+    # Linear operator
+    Ax_minus_Bx = LinearMap{T}((y, x) -> begin
+        # y = (βA - αB) * x
+        mul!(y, B, x, -α, false)
+        mul!(y, A, x, β, true)
+    end, n, ismutating = true)
+
+    # Start with a zero guess
+    fill!(x, zero(T))
+
+    iterable = IterativeSolvers.minres_iterable!(x, Ax_minus_Bx, r, tol=tol,
+                                                initially_zero=true)
+
+    for res = iterable
+        # println(res)
+    end
+
+    nothing
+end
+
+"""
+Solve the problem ``(I - ZZ^*)(βA - αB)(I - QQ^*)t = b``
+this is simplified in Krylov subspaces as solving
+``(βA - αB)t = b``
+with the left preconditioner `Pl = (I - Z inv(Q'Z) Q')`
+"""
 function solve_generalized_correction_equation!(solver::GMRES, A, B, preconditioner, x, Q, Z, precZ, QZ, α, β, r, spare_vector, tol)
     n = size(A, 1)
     @assert n == solver.n
@@ -204,6 +253,34 @@ function solve_generalized_correction_equation!(solver::BiCGStabl, A, B, precond
         Pl,
         solver.γ, ω, σ, solver.M
     )
+
+    for res = iterable
+        # println(res)
+    end
+
+    nothing
+end
+
+function solve_generalized_correction_equation!(solver::CG, A, B, preconditioner, x, Q, Z, precZ, QZ, α, β, r, spare_vector, tol)
+    n = size(A, 1)
+    @assert n == solver.n
+    T = eltype(x)
+
+    # Linear operator
+    Ax_minus_Bx = LinearMap{T}((y, x) -> begin
+        # y = (βA - αB) * x
+        mul!(y, B, x, -α, false)
+        mul!(y, A, x, β, true)
+    end, n, ismutating = true)
+
+    # Start with a zero guess
+    fill!(x, zero(T))
+
+    iterable = IterativeSolvers.cg_iterator!(x, Ax_minus_Bx, r,
+                                             tol=solver.tol,
+                                             maxiter=solver.maxiter,
+                                             statevars=solver.statevars,
+                                             initially_zero=true)
 
     for res = iterable
         # println(res)
